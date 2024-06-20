@@ -14,11 +14,6 @@
 #include <time.h>
 #include <setjmp.h>
 
-#ifdef READLINE
-#include <readline/readline.h>
-#include <readline/history.h>
-#endif
-
 #ifdef _MSC_VER
 #define strdup _strdup
 #define popen _popen
@@ -43,7 +38,7 @@ enum type {
 };
 
 typedef enum {
-  ERROR_OK = 0, ERROR_SYNTAX, ERROR_UNBOUND, ERROR_ARGS, ERROR_TYPE, ERROR_FILE, ERROR_USER
+  ERROR_OK, ERROR_SYNTAX, ERROR_UNBOUND, ERROR_ARGS, ERROR_TYPE, ERROR_FILE, ERROR_USER
 } error;
 
 typedef struct atom atom;
@@ -61,7 +56,7 @@ struct atom {
 		builtin builtin;
 		FILE *fp;
 		struct table *table;
-		char ch;
+		int ch;
 		jmp_buf *jb;
 	} value;
 };
@@ -74,14 +69,14 @@ struct vector {
 
 struct pair {
 	struct atom car, cdr;
-	char mark;
 	struct pair *next;
+	int mark;
 };
 
 struct str {
 	char *value;
-	char mark;
 	struct str *next;
+	int mark;
 };
 
 struct table_entry {
@@ -93,8 +88,8 @@ struct table {
 	size_t capacity;
 	size_t size;
 	struct table_entry **data;
-	char mark;
 	struct table *next;
+	int mark;
 };
 
 /* simple string with length and capacity */
@@ -119,9 +114,6 @@ error macex_eval(atom expr, atom *result);
 error arc_load_file(const char *path);
 char *get_dir_path(char *file_path);
 void arc_init(char *file_path);
-#ifndef READLINE
-char *readline(char *prompt);
-#endif
 char *readline_fp(char *prompt, FILE *fp);
 error read_expr(const char *input, const char **end, atom *result);
 void print_expr(atom a);

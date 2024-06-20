@@ -1,7 +1,13 @@
 #include "arc.h"
 #include <ctype.h>
 
-char *error_string[] = { "", "Syntax error", "Symbol not bound", "Wrong number of arguments", "Wrong type", "File error", "" };
+#include "pcg.h"
+
+#include "library.h"
+
+char *error_string[] = {"", "Syntax error", "Symbol not bound",
+	"Wrong number of arguments", "Wrong type", "File error", ""
+	};
 size_t stack_capacity = 0;
 size_t stack_size = 0;
 atom *stack = NULL;
@@ -16,7 +22,10 @@ size_t symbol_capacity = 0;
 const atom nil = { T_NIL };
 atom env; /* the global environment */
 /* symbols for faster execution */
-atom sym_t, sym_quote, sym_quasiquote, sym_unquote, sym_unquote_splicing, sym_assign, sym_fn, sym_if, sym_mac, sym_apply, sym_cons, sym_sym, sym_string, sym_num, sym__, sym_o, sym_table, sym_int, sym_char, sym_do;
+atom sym_t, sym_quote, sym_quasiquote, sym_unquote, sym_unquote_splicing,
+	sym_assign, sym_fn, sym_if, sym_mac, sym_apply, sym_cons, sym_sym,
+	sym_string, sym_num, sym__, sym_o, sym_table, sym_int, sym_char,
+	sym_do;
 atom cur_expr;
 atom thrown;
 
@@ -434,7 +443,7 @@ error parse_simple(const char *start, const char *end, atom *result)
 	else if (start[0] == '"') { /* "string" */
 		result->type = T_STRING;
 		size_t length = end - start - 2;
-		char *buf = (char*)malloc(length + 1);
+		char *buf = malloc(length + 1);
 		const char *ps = start + 1;
 		char *pt = buf;
 		while (ps < end - 1) {
@@ -721,12 +730,6 @@ error read_expr(const char *input, const char **end, atom *result)
 	else
 		return parse_simple(token, *end, result);
 }
-
-#ifndef READLINE
-char *readline(char *prompt) {
-	return readline_fp(prompt, stdin);
-}
-#endif /* READLINE */
 
 char *readline_fp(char *prompt, FILE *fp) {
 	size_t size = 80;
@@ -1437,7 +1440,7 @@ error builtin_readline(struct vector *vargs, atom *result) {
 	long l = vargs->size;
 	char *str;
 	if (l == 0) {
-		str = readline("");
+		str = readline_fp("", stdin);
 	}
 	else if (l == 1) {
 		if (vargs->data[0].type != T_INPUT && vargs->data[0].type != T_INPUT_PIPE) return ERROR_TYPE;
@@ -2162,12 +2165,12 @@ char *to_string(atom a, int write) {
 	return s.str;
 }
 
-size_t hash_code_sym(char *s) {
-	return (size_t)s / sizeof(s) / 2;
+uintptr_t hash_code_sym(char *s) {
+	return (uintptr_t)s / sizeof(s) / 2;
 }
 
-size_t hash_code(atom a) {
-	size_t r = 1;
+uintptr_t hash_code(atom a) {
+	uintptr_t r = 1;
 	switch (a.type) {
 	case T_NIL:
 		return 0;
@@ -2187,18 +2190,19 @@ size_t hash_code(atom a) {
 	case T_SYM:
 		return hash_code_sym(a.value.symbol);
 	case T_STRING: {
-		char *v = a.value.str->value;
-		for (; *v != 0; v++) {
-			r *= 31;
-			r += *v;
+			char *v = a.value.str->value;
+			for (; *v != 0; v++) {
+				r *= 31;
+				r += *v;
+			}
+			return r;
 		}
-		return r; }
 	case T_NUM:
 		//return (size_t)(void *)a.value.symbol;
 		//return (size_t)a.value.number;
-		return (size_t)((void*)a.value.symbol) + (size_t)a.value.number;
+		return (uintptr_t)((void*)a.value.symbol) + (size_t)a.value.number;
 	case T_BUILTIN:
-		return (size_t)a.value.builtin;
+		return (uintptr_t)a.value.builtin;
 	case T_CLOSURE:
 		return hash_code(cdr(a));
 	case T_MACRO:
@@ -2206,7 +2210,7 @@ size_t hash_code(atom a) {
 	case T_INPUT:
 	case T_INPUT_PIPE:
 	case T_OUTPUT:
-		return (size_t)a.value.fp / sizeof(*a.value.fp);
+		return (uintptr_t)a.value.fp / sizeof(void*);
 	default:
 		return 0;
 	}
@@ -2300,8 +2304,7 @@ void table_add(struct table *tbl, atom k, atom v) {
 /* return entry. return NULL if not found */
 struct table_entry *table_get(struct table *tbl, atom k) {
 	if (tbl->size == 0) return NULL;
-	size_t pos = hash_code(k) % tbl->capacity;
-	struct table_entry *p = tbl->data[pos];
+	struct table_entry *p = tbl->data[hash_code(k) % tbl->capacity];
 	while (p) {
 		if (iso(p->k, k)) {
 			return p;
@@ -2314,8 +2317,7 @@ struct table_entry *table_get(struct table *tbl, atom k) {
 /* return entry. return NULL if not found */
 struct table_entry *table_get_sym(struct table *tbl, char *k) {
 	if (tbl->size == 0) return NULL;
-	size_t pos = hash_code_sym(k) % tbl->capacity;
-	struct table_entry *p = tbl->data[pos];
+	struct table_entry *p = tbl->data[hash_code_sym(k) % tbl->capacity];
 	while (p) {
 		if (p->k.value.symbol == k) {
 			return p;
@@ -2334,7 +2336,7 @@ char *slurp_fp(FILE *fp) {
 	if (len < 0) return NULL;
 	fseek(fp, 0, SEEK_SET);
 
-	buf = (char *)malloc(len + 1);
+	buf = malloc(len + 1);
 	if (!buf)
 		return NULL;
 
@@ -2668,11 +2670,11 @@ start_eval:
 	}
 }
 
+static struct pcg32x2 rng[1];
+
 void arc_init(char *file_path) {
-#ifdef READLINE
-	rl_bind_key('\t', rl_insert); /* prevent tab completion */
-#endif
-	srand((unsigned int)time(0));
+	pcg32x2_default_seed(rng, 1);
+
 	env = env_create_cap(nil, 500);
 
 	symbol_capacity = 500;
@@ -2757,8 +2759,6 @@ void arc_init(char *file_path) {
 	env_assign(env, make_sym("len").value.symbol, make_builtin(builtin_len));
 	env_assign(env, make_sym("ccc").value.symbol, make_builtin(builtin_ccc));
 	env_assign(env, make_sym("pipe-from").value.symbol, make_builtin(builtin_pipe_from));
-
-#include "library.h"
 
 	error err = load_string(stdlib);
 	if (err) {
