@@ -1,10 +1,6 @@
 #include "arc.h"
 #define VERSION "2024-06-20"
 
-void print_logo() {
-	printf("arkadien %s\n", VERSION);
-}
-
 void repl() {
 	struct string input;
 
@@ -56,8 +52,8 @@ void repl() {
 int main(int argc, char **argv)
 {
 	if (argc == 1) { /* REPL */
-		print_logo();
-		arc_init(argv[0]);
+		printf("arkadien %s\n", VERSION);
+		arc_init();
 		repl();
 		puts("");
 		return 0;
@@ -79,7 +75,7 @@ int main(int argc, char **argv)
 	}
 
 	/* execute files */
-	arc_init(argv[0]);
+	arc_init();
 	int i;
 	error err;
 	for (i = 1; i < argc; i++) {

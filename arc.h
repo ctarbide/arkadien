@@ -6,9 +6,33 @@
 #define _CRT_SECURE_NO_WARNINGS
 #endif
 
-#include <stdio.h>
+/* include malloc and friends before gc.h for
+ * first for bdwgc setup
+ */
 #include <stdlib.h>
 #include <string.h>
+
+#include <gc.h>
+
+#undef malloc
+#define malloc(n) GC_MALLOC(n)
+
+#undef calloc
+#define calloc(m,n) GC_MALLOC((m)*(n))
+
+#undef free
+#define free(p) GC_FREE(p)
+
+#undef realloc
+#define realloc(p,n) GC_REALLOC(p,n)
+
+#undef strdup
+#define strdup(s) GC_STRDUP(s)
+
+#undef strndup
+#define strndup(s,n) GC_STRNDUP(s,n)
+
+#include <stdio.h>
 #include <stddef.h>
 #include <math.h>
 #include <time.h>
@@ -47,7 +71,6 @@ typedef error(*builtin)(struct vector *vargs, atom *result);
 
 struct atom {
 	enum type type;
-
 	union {
 		double number;
 		struct pair *pair;
@@ -69,14 +92,10 @@ struct vector {
 
 struct pair {
 	struct atom car, cdr;
-	struct pair *next;
-	int mark;
 };
 
 struct str {
 	char *value;
-	struct str *next;
-	int mark;
 };
 
 struct table_entry {
@@ -88,8 +107,6 @@ struct table {
 	size_t capacity;
 	size_t size;
 	struct table_entry **data;
-	struct table *next;
-	int mark;
 };
 
 /* simple string with length and capacity */
@@ -104,8 +121,6 @@ int listp(atom expr);
 char *slurp_fp(FILE *fp);
 char *slurp(const char *path);
 error eval_expr(atom expr, atom env, atom *result);
-void gc_mark(atom root);
-void gc();
 error macex(atom expr, atom *result);
 char *to_string(atom a, int write);
 void string_new(struct string* dst);
@@ -113,7 +128,7 @@ void string_cat(struct string *dst, char *src);
 error macex_eval(atom expr, atom *result);
 error arc_load_file(const char *path);
 char *get_dir_path(char *file_path);
-void arc_init(char *file_path);
+void arc_init(void);
 char *readline_fp(char *prompt, FILE *fp);
 error read_expr(const char *input, const char **end, atom *result);
 void print_expr(atom a);
@@ -127,7 +142,6 @@ struct table_entry *table_get(struct table *tbl, atom k);
 struct table_entry *table_get_sym(struct table *tbl, char *k);
 int table_set(struct table *tbl, atom k, atom v);
 int table_set_sym(struct table *tbl, char *k, atom v);
-void consider_gc();
 atom cons(atom car_val, atom cdr_val);
 /* end forward */
 

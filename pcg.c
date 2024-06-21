@@ -28,7 +28,7 @@ pcg32_default_seed(struct pcg32 *rng, uint64_t inc)
     state = tv->tv_sec + tv->tv_usec;
     inc |= 1;
     for (i=0; i<16; i++)
-        state = state * 6364136223846793005ULL + rng->inc; /* stir */
+        state = state * 6364136223846793005ULL + inc; /* stir */
     rng->state = state;
     rng->inc = inc;
 }
@@ -51,7 +51,7 @@ void
 pcg32x2_default_seed(struct pcg32x2 *rng, uint64_t inc)
 {
     uint32_t a, b;
-    pcg32_default_seed(&rng->rng1, 1);
+    pcg32_default_seed(&rng->rng1, inc);
     a = pcg32_random(&rng->rng1);
     b = pcg32_random(&rng->rng1);
     pcg32_default_seed(&rng->rng2, CAT64(a, b) | 1);
@@ -68,8 +68,6 @@ pcg32x2_random(struct pcg32x2 *rng)
  * log(67108864) / log(2) = 26.0
  * log(9007199254740992) / log(2) = 53.0
  *
- * numbers verified with Web REDUCE
- *
  */
 
 /* [0,1) */
@@ -78,5 +76,5 @@ pcg53(struct pcg32x2 *rng)
 {
     uint64_t a = pcg32_random(&rng->rng1) >> (32 - 27);
     uint64_t b = pcg32_random(&rng->rng2) >> (32 - 26);
-    return (a * 67108864.0 + b) / 9007199254740992.0;
+    return (a * (double)67108864.0 + b) / (double)9007199254740992.0;
 }

@@ -8,14 +8,6 @@
 char *error_string[] = {"", "Syntax error", "Symbol not bound",
 	"Wrong number of arguments", "Wrong type", "File error", ""
 	};
-size_t stack_capacity = 0;
-size_t stack_size = 0;
-atom *stack = NULL;
-struct pair *pair_head = NULL;
-struct str *str_head = NULL;
-struct table *table_head = NULL;
-size_t alloc_count = 0;
-size_t alloc_count_old = 0;
 char **symbol_table = NULL;
 size_t symbol_size = 0;
 size_t symbol_capacity = 0;
@@ -28,6 +20,8 @@ atom sym_t, sym_quote, sym_quasiquote, sym_unquote, sym_unquote_splicing,
 	sym_do;
 atom cur_expr;
 atom thrown;
+
+static struct pcg32x2 rng[1];
 
 /* Be sure to free after use */
 void vector_new(struct vector *a) {
@@ -76,185 +70,18 @@ void atom_to_vector(atom a, struct vector *v) {
 	}
 }
 
-void stack_add(atom a) {
-	switch (a.type) {
-	case T_CONS:
-	case T_CLOSURE:
-	case T_MACRO:
-	case T_STRING:
-	case T_TABLE:
-		break;
-	default:
-		return;
-	}
-	stack_size++;
-	if (stack_size > stack_capacity) {
-		stack_capacity = stack_size * 2;
-		stack = realloc(stack, stack_capacity * sizeof(atom));
-	}
-	stack[stack_size - 1] = a;
-}
-
-void stack_restore(int saved_size) {
-	stack_size = saved_size;
-	/* if there is waste of memory, realloc */
-	if (stack_size < stack_capacity / 4) {
-		stack_capacity = stack_size * 2;
-		stack = realloc(stack, stack_capacity * sizeof(atom));
-	}
-}
-
-void stack_restore_add(int saved_size, atom a) {
-	stack_size = saved_size;
-	/* if there is waste of memory, realloc */
-	if (stack_size < stack_capacity / 4) {
-		stack_capacity = stack_size * 2;
-		stack = realloc(stack, stack_capacity * sizeof(atom));
-	}
-	stack_add(a);
-}
-
-void consider_gc() {
-	if (alloc_count > 2 * alloc_count_old)
-		gc();
-}
-
 atom cons(atom car_val, atom cdr_val)
 {
 	struct pair *a;
 	atom p;
 
-	alloc_count++;
-
 	a = malloc(sizeof(struct pair));
-	a->mark = 0;
-	a->next = pair_head;
-	pair_head = a;
-
 	p.type = T_CONS;
 	p.value.pair = a;
-
 	car(p) = car_val;
 	cdr(p) = cdr_val;
-
-	stack_add(p);
-
 	return p;
 }
-
-void gc_mark(atom root)
-{
-	struct pair *a;
-	struct str *as;
-	struct table *at;
-start:
-	switch (root.type) {
-	case T_CONS:
-	case T_CLOSURE:
-	case T_MACRO:
-		a = root.value.pair;
-		if (a->mark) return;
-		a->mark = 1;
-		gc_mark(car(root));
-		/* reduce recursion */
-		root = cdr(root);
-		goto start;
-		break;
-	case T_STRING:
-		as = root.value.str;
-		if (as->mark) return;
-		as->mark = 1;
-		break;
-	case T_TABLE: {
-		at = root.value.table;
-		if (at->mark) return;
-		at->mark = 1;
-		size_t i;
-		for (i = 0; i < at->capacity; i++) {
-			struct table_entry *e = at->data[i];
-			while (e) {
-				gc_mark(e->k);
-				gc_mark(e->v);
-				e = e->next;
-			}
-		}
-		break; }
-	default:
-		return;
-	}
-}
-
-void gc()
-{
-	struct pair *a, **p;
-	struct str *as, **ps;
-	struct table *at, **pt;
-
-	/* mark atoms in the stack */
-	size_t i;
-	for (i = 0; i < stack_size; i++) {
-		gc_mark(stack[i]);
-	}
-
-	alloc_count_old = 0;
-	/* Free unmarked "cons" allocations */
-	p = &pair_head;
-	while (*p != NULL) {
-		a = *p;
-		if (!a->mark) {
-			*p = a->next;
-			free(a);
-		}
-		else {
-			p = &a->next;
-			a->mark = 0; /* clear mark */
-			alloc_count_old++;
-		}
-	}
-
-	/* Free unmarked "string" allocations */
-	ps = &str_head;
-	while (*ps != NULL) {
-		as = *ps;
-		if (!as->mark) {
-			*ps = as->next;
-			free(as->value);
-			free(as);
-		}
-		else {
-			ps = &as->next;
-			as->mark = 0; /* clear mark */
-			alloc_count_old++;
-		}
-	}
-
-	/* Free unmarked "table" allocations */
-	pt = &table_head;
-	while (*pt != NULL) {
-		at = *pt;
-		if (!at->mark) {
-			*pt = at->next;
-			size_t i;
-			for (i = 0; i < at->capacity; i++) {
-				struct table_entry *e = at->data[i];
-				while (e) {
-					struct table_entry *next = e->next;
-					free(e);
-					e = next;
-				}
-			}
-			free(at->data);
-			free(at);
-		}
-		else {
-			pt = &at->next;
-			at->mark = 0; /* clear mark */
-			alloc_count_old++;
-		}
-	}
-	alloc_count = alloc_count_old;
-}
-
 
 atom make_number(double x)
 {
@@ -334,15 +161,10 @@ atom make_string(char *x)
 {
 	atom a;
 	struct str *s;
-	alloc_count++;
+
 	s = a.value.str = malloc(sizeof(struct str));
 	s->value = x;
-	s->mark = 0;
-	s->next = str_head;
-	str_head = s;
-
 	a.type = T_STRING;
-	stack_add(a);
 	return a;
 }
 
@@ -743,7 +565,7 @@ char *readline_fp(char *prompt, FILE *fp) {
 	while (EOF != (ch = fgetc(fp)) && ch != '\n') {
 		str[len++] = ch;
 		if (len == size) {
-			void *p = realloc(str, sizeof(char)*(size *= 2));
+			void *p = realloc(str, sizeof(char) * (size *= 2));
 			if (!p) {
 				free(str);
 				return NULL;
@@ -756,8 +578,7 @@ char *readline_fp(char *prompt, FILE *fp) {
 		return NULL;
 	}
 	str[len++] = '\0';
-
-	return realloc(str, sizeof(char)*len);
+	return realloc(str, sizeof(char) * len);
 }
 
 atom env_create(atom parent)
@@ -1454,22 +1275,29 @@ error builtin_readline(struct vector *vargs, atom *result) {
 }
 
 error builtin_quit(struct vector *vargs, atom *result) {
-	if (vargs->size != 0) return ERROR_ARGS;
+	if (vargs->size)
+		return ERROR_ARGS;
+	(void)result;
 	exit(0);
 }
 
-double rand_double() {
-	return (double)rand() / ((double)RAND_MAX + 1.0);
-}
-
 error builtin_rand(struct vector *vargs, atom *result) {
-	long alen = vargs->size;
-	if (alen == 0) *result = make_number(rand_double());
-	else if (alen == 1) *result = make_number(floor(rand_double() * vargs->data[0].value.number));
-	else return ERROR_ARGS;
+	switch (vargs->size) {
+		case 0:
+			*result = make_number(pcg53(rng));
+			break;
+		case 1:
+			*result = make_number(floor(
+				pcg53(rng) * vargs->data[0].value.number));
+			break;
+		default:
+			return ERROR_ARGS;
+	}
 	return ERROR_OK;
 }
 
+/* N.B.: portability, only one pushback is guaranteed for ungetc
+ */
 error read_fp(FILE *fp, atom *result) {
 	char *s = readline_fp("", fp);
 	if (s == NULL) return ERROR_FILE;
@@ -1925,21 +1753,25 @@ error builtin_coerce(struct vector *vargs, atom *result) {
 }
 
 error builtin_flushout(struct vector *vargs, atom *result) {
-	if (vargs->size != 0) return ERROR_ARGS;
+	if (vargs->size)
+		return ERROR_ARGS;
 	fflush(stdout);
 	*result = sym_t;
 	return ERROR_OK;
 }
 
 error builtin_err(struct vector *vargs, atom *result) {
-	if (vargs->size == 0) return ERROR_ARGS;
-	cur_expr = nil;
 	size_t i;
+
+	if (vargs->size == 0)
+		return ERROR_ARGS;
+	cur_expr = nil;
 	for (i = 0; i < vargs->size; i++) {
 		char *s = to_string(vargs->data[i], 0);
 		puts(s);
 		free(s);
 	}
+	*result = nil;
 	return ERROR_USER;
 }
 
@@ -2219,7 +2051,7 @@ uintptr_t hash_code(atom a) {
 atom make_table(size_t capacity) {
 	atom a;
 	struct table *s;
-	alloc_count++;
+
 	s = a.value.table = malloc(sizeof(struct table));
 	s->capacity = capacity;
 	s->size = 0;
@@ -2228,12 +2060,8 @@ atom make_table(size_t capacity) {
 	for (i = 0; i < capacity; i++) {
 		s->data[i] = NULL;
 	}
-	s->mark = 0;
-	s->next = table_head;
-	table_head = s;
 	a.value.table = s;
 	a.type = T_TABLE;
-	stack_add(a);
 	return a;
 }
 
@@ -2329,18 +2157,21 @@ struct table_entry *table_get_sym(struct table *tbl, char *k) {
 
 char *slurp_fp(FILE *fp) {
 	char *buf;
-	long len;
+	long pos;
+	size_t len;
 
 	fseek(fp, 0, SEEK_END);
-	len = ftell(fp);
-	if (len < 0) return NULL;
+	pos = ftell(fp);
+	if (pos < 0)
+		return NULL;
 	fseek(fp, 0, SEEK_SET);
 
-	buf = malloc(len + 1);
-	if (!buf)
+	len = (size_t)pos; /* pos nonnegative */
+	if ((buf = malloc(len + 1)) == NULL)
 		return NULL;
 
-	if (fread(buf, 1, len, fp) != len) return NULL;
+	if (fread(buf, 1, len, fp) != len)
+		return NULL;
 	buf[len] = 0;
 
 	return buf;
@@ -2348,12 +2179,17 @@ char *slurp_fp(FILE *fp) {
 
 char *slurp(const char *path)
 {
+	char *r;
+
 	FILE *fp = fopen(path, "rb");
 	if (!fp) {
 		/* printf("Reading %s failed.\n", path); */
 		return NULL;
 	}
-	char *r = slurp_fp(fp);
+	if ((r = slurp_fp(fp)) == NULL) {
+		fprintf(stderr, "Error, failed to open \"%s\".\n", path);
+		exit(1);
+	}
 	fclose(fp);
 	return r;
 }
@@ -2369,7 +2205,6 @@ error macex(atom expr, atom *result) {
 		return ERROR_OK;
 	}
 	else {
-		int ss = stack_size; /* save stack point */
 		atom op = car(expr);
 
 		/* Handle quote */
@@ -2393,17 +2228,14 @@ error macex(atom expr, atom *result) {
 			err = apply(op, &vargs, &result2);
 			if (err) {
 				vector_free(&vargs);
-				stack_restore(ss);
 				return err;
 			}
 			err = macex(result2, result); /* recursive */
 			if (err) {
 				vector_free(&vargs);
-				stack_restore(ss);
 				return err;
 			}
 			vector_free(&vargs);
-			stack_restore_add(ss, *result);
 			return ERROR_OK;
 		}
 		else {
@@ -2412,13 +2244,10 @@ error macex(atom expr, atom *result) {
 			atom h;
 			for (h = expr2; !no(h); h = cdr(h)) {
 				err = macex(car(h), &car(h));
-				if (err) {
-					stack_restore(ss);
+				if (err)
 					return err;
-				}
 			}
 			*result = expr2;
-			stack_restore_add(ss, *result);
 			return ERROR_OK;
 		}
 	}
@@ -2489,9 +2318,7 @@ error arc_load_file(const char *path)
 error eval_expr(atom expr, atom env, atom *result)
 {
 	error err;
-	int ss = stack_size; /* save stack point */
 start_eval:
-	consider_gc();
 	cur_expr = expr; /* for error reporting */
 	if (expr.type == T_SYM) {
 		err = env_get(env, expr.value.symbol, result);
@@ -2517,10 +2344,8 @@ start_eval:
 						goto start_eval;
 					}
 					err = eval_expr(car(*p), env, &cond);
-					if (err) {
-						stack_restore(ss);
+					if (err)
 						return err;
-					}
 					if (!no(cond)) { /* then */
 						/* tail call optimization of err = eval_expr(car(cdr(*p)), env, result); */
 						expr = car(cdr(*p));
@@ -2529,52 +2354,36 @@ start_eval:
 					p = &cdr(cdr(*p));
 				}
 				*result = nil;
-				stack_restore_add(ss, *result);
 				return ERROR_OK;
 			}
 			else if (op.value.symbol == sym_assign.value.symbol) {
 				atom sym;
-				if (no(args) || no(cdr(args))) {
-					stack_restore(ss);
+				if (no(args) || no(cdr(args)))
 					return ERROR_ARGS;
-				}
-
 				sym = car(args);
 				if (sym.type == T_SYM) {
 					atom val;
 					err = eval_expr(car(cdr(args)), env, &val);
-					if (err) {
-						stack_restore(ss);
+					if (err)
 						return err;
-					}
-
 					*result = val;
 					err = env_assign_eq(env, sym.value.symbol, val);
-					stack_restore_add(ss, *result);
 					return err;
 				}
-				else {
-					stack_restore(ss);
+				else
 					return ERROR_TYPE;
-				}
 			}
 			else if (op.value.symbol == sym_quote.value.symbol) {
-				if (no(args) || !no(cdr(args))) {
-					stack_restore(ss);
+				if (no(args) || !no(cdr(args)))
 					return ERROR_ARGS;
-				}
 
 				*result = car(args);
-				stack_restore_add(ss, *result);
 				return ERROR_OK;
 			}
 			else if (op.value.symbol == sym_fn.value.symbol) {
-				if (no(args)) {
-					stack_restore(ss);
+				if (no(args))
 					return ERROR_ARGS;
-				}
 				err = make_closure(env, car(args), cdr(args), result);
-				stack_restore_add(ss, *result);
 				return err;
 			}
 			else if (op.value.symbol == sym_do.value.symbol) {
@@ -2583,7 +2392,6 @@ start_eval:
 					if (no(cdr(args))) {
 						/* tail call */
 						expr = car(args);
-						stack_restore(ss);
 						goto start_eval;
 					}
 					error err = eval_expr(car(args), env, result);
@@ -2597,39 +2405,30 @@ start_eval:
 			else if (op.value.symbol == sym_mac.value.symbol) { /* (mac name (arg ...) body) */
 				atom name, macro;
 
-				if (no(args) || no(cdr(args)) || no(cdr(cdr(args)))) {
-					stack_restore(ss);
+				if (no(args) || no(cdr(args)) || no(cdr(cdr(args))))
 					return ERROR_ARGS;
-				}
 
 				name = car(args);
-				if (name.type != T_SYM) {
-					stack_restore(ss);
+				if (name.type != T_SYM)
 					return ERROR_TYPE;
-				}
 
 				err = make_closure(env, car(cdr(args)), cdr(cdr(args)), &macro);
 				if (!err) {
 					macro.type = T_MACRO;
 					*result = name;
 					err = env_assign(env, name.value.symbol, macro);
-					stack_restore_add(ss, *result);
 					return err;
 				}
-				else {
-					stack_restore(ss);
+				else
 					return err;
-				}
 			}
 		}
 
 		/* Evaluate operator */
 		atom fn;
 		err = eval_expr(op, env, &fn);
-		if (err) {
-			stack_restore(ss);
+		if (err)
 			return err;
-		}
 
 		/* Evaulate arguments */
 		struct vector vargs;
@@ -2640,7 +2439,6 @@ start_eval:
 			err = eval_expr(car(*p), env, &r);
 			if (err) {
 				vector_free(&vargs);
-				stack_restore(ss);
 				return err;
 			}
 			vector_add(&vargs, r);
@@ -2665,14 +2463,11 @@ start_eval:
 			err = apply(fn, &vargs, result);
 			vector_free(&vargs);
 		}
-		stack_restore_add(ss, *result);
 		return err;
 	}
 }
 
-static struct pcg32x2 rng[1];
-
-void arc_init(char *file_path) {
+void arc_init(void) {
 	pcg32x2_default_seed(rng, 1);
 
 	env = env_create_cap(nil, 500);

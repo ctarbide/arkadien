@@ -1,7 +1,8 @@
 
 CC = gcc
-CFLAGS = -Wall -O2 -c
-LDFLAGS = -lm
+WFLAGS = -Wall -Werror -Wextra
+CFLAGS = -O2 -c $(WFLAGS)
+LDFLAGS = -lm -lgc
 
 PROG = arkadien
 
